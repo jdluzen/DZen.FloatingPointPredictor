@@ -1,0 +1,28 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- NuGet package metadata -->
+    <PackageId>DZen.FloatingPointPredictor</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Joe Dluzen</Authors>
+    <Description>
+      Hardware-accelerated TIFF Floating-Point Predictor (TIFF Technical Note 3,
+      Predictor=3) for float32 raster data.  Provides Encode and Decode operations
+      with automatic dispatch to AVX-512BW, AVX2, SSSE3, ARM NEON, or scalar fallback.
+      Designed for use with ZSTD-compressed Cloud-Optimized GeoTIFFs (COG).
+    </Description>
+    <PackageTags>tiff;cog;geotiff;predictor;simd;avx512;avx2;neon;raster</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+		<Copyright>Copyright (c) Joe Dluzen 2026</Copyright>
+    <PackageProjectUrl>https://github.com/jdluzen/DZen.FloatingPointPredictor</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jdluzen/DZen.FloatingPointPredictor</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+</Project>

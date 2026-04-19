@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".gitignore" />
+    <File Path="LICENSE" />
+    <File Path="README.md" />
+  </Folder>
+  <Project Path="DZen.FloatingPointPredictor.Tests/DZen.FloatingPointPredictor.Tests.csproj" />
+  <Project Path="DZen.FloatingPointPredictor/DZen.FloatingPointPredictor.csproj" />
+</Solution>
