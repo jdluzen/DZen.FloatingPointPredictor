@@ -6,9 +6,7 @@ using System.Runtime.Intrinsics.Arm;
 
 namespace DZen.FloatingPointPredictor
 {
-    // ═══════════════════════════════════════════════════════════════════════════
     // ── Horizontal Differencing Predictor (TIFF Predictor = 2) ─────────────────
-    // ═══════════════════════════════════════════════════════════════════════════
 
     /// <summary>
     /// Implements the horizontal differencing predictor defined by TIFF Predictor = 2.
@@ -98,9 +96,7 @@ namespace DZen.FloatingPointPredictor
                 DeltaDecodeStrided(row, width, bps);
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
         // ── Scalar implementations ─────────────────────────────────────────────
-        // ═══════════════════════════════════════════════════════════════════════
 
         private static void DeltaEncodeStrided(Span<byte> row, int width, int bps)
         {
@@ -168,275 +164,261 @@ namespace DZen.FloatingPointPredictor
                 row[i] += row[i - 1];
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
         // ── SSE2 encode (16 bytes per iteration) ───────────────────────────────
-        // ═══════════════════════════════════════════════════════════════════════
 
-        private static unsafe void DeltaEncodeSse2(Span<byte> row, int totalBytes)
+        private static void DeltaEncodeSse2(Span<byte> row, int totalBytes)
         {
             if (!Sse2.IsSupported) { DeltaEncodePureScalar(row, totalBytes); return; }
 
             int i = totalBytes;
-            fixed (byte* p = row)
+            ref byte rowRef = ref MemoryMarshal.GetReference(row);
+
+            for (; i > 16; i -= 16)
             {
-                for (; i > 16; i -= 16)
-                {
-                    var cur = Sse2.LoadVector128(p + i - 16);
-                    var prv = Sse2.LoadVector128(p + i - 17);
-                    var res = Sse2.Subtract(cur, prv);
-                    Sse2.Store(p + i - 16, res);
-                }
+                var cur = Vector128.LoadUnsafe(ref Unsafe.Add(ref rowRef, i - 16));
+                var prv = Vector128.LoadUnsafe(ref Unsafe.Add(ref rowRef, i - 17));
+                var res = Sse2.Subtract(cur, prv);
+                res.StoreUnsafe(ref Unsafe.Add(ref rowRef, i - 16));
             }
+
             for (; i >= 2; i--)
                 row[i - 1] -= row[i - 2];
         }
 
         // ── SSE2 decode (16 bytes per iteration) ───────────────────────────────
 
-        private static unsafe void DeltaDecodeSse2(Span<byte> row, int totalBytes)
+        private static void DeltaDecodeSse2(Span<byte> row, int totalBytes)
         {
             if (!Sse2.IsSupported) { DeltaDecodePureScalar(row, totalBytes); return; }
 
             int i = 0;
             byte running = 0;
+            ref byte rowRef = ref MemoryMarshal.GetReference(row);
 
-            fixed (byte* p = row)
+            if (totalBytes >= 16)
             {
-                if (totalBytes >= 16)
-                {
-                    var v0 = Sse2.LoadVector128(p);
-                    var ps = PrefixSum16(v0);
-                    Sse2.Store(p, ps);
-                    running = Unsafe.ReadUnaligned<byte>(p + 15);
-                    i = 16;
-                }
+                var v0 = Vector128.LoadUnsafe(ref rowRef);
+                var ps = PrefixSum16(v0);
+                ps.StoreUnsafe(ref rowRef);
+                running = Unsafe.Add(ref rowRef, 15);
+                i = 16;
+            }
 
-                for (; i <= totalBytes - 16; i += 16)
-                {
-                    var v = Sse2.LoadVector128(p + i);
-                    var ps = PrefixSum16(v);
-                    var bro = Vector128.Create(running);
-                    var res = Sse2.Add(ps, bro);
-                    Sse2.Store(p + i, res);
-                    running = Unsafe.ReadUnaligned<byte>(p + i + 15);
-                }
+            for (; i <= totalBytes - 16; i += 16)
+            {
+                ref byte chunkRef = ref Unsafe.Add(ref rowRef, i);
+                var v = Vector128.LoadUnsafe(ref chunkRef);
+                var ps = PrefixSum16(v);
+                var bro = Vector128.Create(running);
+                var res = Sse2.Add(ps, bro);
+                res.StoreUnsafe(ref chunkRef);
+                running = Unsafe.Add(ref rowRef, i + 15);
             }
 
             for (; i < totalBytes; i++)
                 row[i] += row[i - 1];
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
         // ── AVX2 encode (32 bytes per iteration) ───────────────────────────────
-        // ═══════════════════════════════════════════════════════════════════════
 
-        private static unsafe void DeltaEncodeAvx2(Span<byte> row, int totalBytes)
+        private static void DeltaEncodeAvx2(Span<byte> row, int totalBytes)
         {
             if (!Avx2.IsSupported) { DeltaEncodeSse2(row, totalBytes); return; }
 
             int i = totalBytes;
-            fixed (byte* p = row)
+            ref byte rowRef = ref MemoryMarshal.GetReference(row);
+
+            for (; i > 32; i -= 32)
             {
-                for (; i > 32; i -= 32)
-                {
-                    var cur = Avx.LoadVector256(p + i - 32);
-                    var prv = Avx.LoadVector256(p + i - 33);
-                    var res = Avx2.Subtract(cur, prv);
-                    Avx.Store(p + i - 32, res);
-                }
+                var cur = Vector256.LoadUnsafe(ref Unsafe.Add(ref rowRef, i - 32));
+                var prv = Vector256.LoadUnsafe(ref Unsafe.Add(ref rowRef, i - 33));
+                var res = Avx2.Subtract(cur, prv);
+                res.StoreUnsafe(ref Unsafe.Add(ref rowRef, i - 32));
             }
+
             DeltaEncodeSse2(row[..i], i);
         }
 
         // ── AVX2 decode (32 bytes per iteration) ───────────────────────────────
 
-        private static unsafe void DeltaDecodeAvx2(Span<byte> row, int totalBytes)
+        private static void DeltaDecodeAvx2(Span<byte> row, int totalBytes)
         {
             if (!Avx2.IsSupported) { DeltaDecodeSse2(row, totalBytes); return; }
 
             int i = 0;
             byte running = 0;
+            ref byte rowRef = ref MemoryMarshal.GetReference(row);
 
-            fixed (byte* p = row)
+            if (totalBytes >= 32)
             {
-                if (totalBytes >= 32)
-                {
-                    var v0 = Avx.LoadVector256(p);
-                    var lo = PrefixSum16(v0.GetLower());
-                    var up = PrefixSum16(v0.GetUpper());
-                    byte lastLo = lo.GetElement(15);
-                    var bro = Vector128.Create(lastLo);
-                    var adj = Sse2.Add(up, bro);
-                    var res = Vector256.Create(lo, adj);
-                    Avx.Store(p, res);
-                    running = Unsafe.ReadUnaligned<byte>(p + 31);
-                    i = 32;
-                }
+                var v0 = Vector256.LoadUnsafe(ref rowRef);
+                var lo = PrefixSum16(v0.GetLower());
+                var up = PrefixSum16(v0.GetUpper());
+                byte lastLo = lo.GetElement(15);
+                var bro = Vector128.Create(lastLo);
+                var adj = Sse2.Add(up, bro);
+                var res = Vector256.Create(lo, adj);
+                res.StoreUnsafe(ref rowRef);
+                running = Unsafe.Add(ref rowRef, 31);
+                i = 32;
+            }
 
-                for (; i <= totalBytes - 32; i += 32)
-                {
-                    var v = Avx.LoadVector256(p + i);
-                    var lo = PrefixSum16(v.GetLower());
-                    var up = PrefixSum16(v.GetUpper());
-                    byte lastLo = lo.GetElement(15);
-                    var broLo = Vector128.Create(lastLo);
-                    var adjUp = Sse2.Add(up, broLo);
-                    var ps = Vector256.Create(lo, adjUp);
-                    var bro64 = Vector256.Create(running);
-                    var res = Avx2.Add(ps, bro64);
-                    Avx.Store(p + i, res);
-                    running = Unsafe.ReadUnaligned<byte>(p + i + 31);
-                }
+            for (; i <= totalBytes - 32; i += 32)
+            {
+                ref byte chunkRef = ref Unsafe.Add(ref rowRef, i);
+                var v = Vector256.LoadUnsafe(ref chunkRef);
+                var lo = PrefixSum16(v.GetLower());
+                var up = PrefixSum16(v.GetUpper());
+                byte lastLo = lo.GetElement(15);
+                var broLo = Vector128.Create(lastLo);
+                var adjUp = Sse2.Add(up, broLo);
+                var ps = Vector256.Create(lo, adjUp);
+                var bro64 = Vector256.Create(running);
+                var res = Avx2.Add(ps, bro64);
+                res.StoreUnsafe(ref chunkRef);
+                running = Unsafe.Add(ref rowRef, i + 31);
             }
 
             for (; i < totalBytes; i++)
                 row[i] += row[i - 1];
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
         // ── AVX-512BW encode (64 bytes per iteration) ──────────────────────────
-        // ═══════════════════════════════════════════════════════════════════════
 
-        private static unsafe void DeltaEncodeAvx512(Span<byte> row, int totalBytes)
+        private static void DeltaEncodeAvx512(Span<byte> row, int totalBytes)
         {
             if (!Avx512BW.IsSupported) { DeltaEncodeAvx2(row, totalBytes); return; }
 
             int i = totalBytes;
-            fixed (byte* p = row)
+            ref byte rowRef = ref MemoryMarshal.GetReference(row);
+
+            for (; i > 64; i -= 64)
             {
-                for (; i > 64; i -= 64)
-                {
-                    var cur = Avx512BW.LoadVector512(p + i - 64);
-                    var prv = Avx512BW.LoadVector512(p + i - 65);
-                    var res = Avx512BW.Subtract(cur, prv);
-                    Avx512BW.Store(p + i - 64, res);
-                }
+                var cur = Vector512.LoadUnsafe(ref Unsafe.Add(ref rowRef, i - 64));
+                var prv = Vector512.LoadUnsafe(ref Unsafe.Add(ref rowRef, i - 65));
+                var res = Avx512BW.Subtract(cur, prv);
+                res.StoreUnsafe(ref Unsafe.Add(ref rowRef, i - 64));
             }
+
             DeltaEncodeAvx2(row[..i], i);
         }
 
         // ── AVX-512BW decode (64 bytes per iteration) ──────────────────────────
 
-        private static unsafe void DeltaDecodeAvx512(Span<byte> row, int totalBytes)
+        private static void DeltaDecodeAvx512(Span<byte> row, int totalBytes)
         {
             if (!Avx512BW.IsSupported) { DeltaDecodeAvx2(row, totalBytes); return; }
 
             int i = 0;
             byte running = 0;
+            ref byte rowRef = ref MemoryMarshal.GetReference(row);
 
-            fixed (byte* p = row)
+            if (totalBytes >= 64)
             {
-                if (totalBytes >= 64)
-                {
-                    var v0 = Avx512BW.LoadVector512(p);
-                    var l0 = PrefixSum16(v0.GetLower().GetLower());
-                    var l1 = PrefixSum16(v0.GetLower().GetUpper());
-                    var l2 = PrefixSum16(v0.GetUpper().GetLower());
-                    var l3 = PrefixSum16(v0.GetUpper().GetUpper());
+                var v0 = Vector512.LoadUnsafe(ref rowRef);
+                var l0 = PrefixSum16(v0.GetLower().GetLower());
+                var l1 = PrefixSum16(v0.GetLower().GetUpper());
+                var l2 = PrefixSum16(v0.GetUpper().GetLower());
+                var l3 = PrefixSum16(v0.GetUpper().GetUpper());
 
-                    byte b0 = l0.GetElement(15);
-                    var l1adj = Sse2.Add(l1, Vector128.Create(b0));
-                    byte b1 = l1adj.GetElement(15);
-                    var l2adj = Sse2.Add(l2, Vector128.Create(b1));
-                    byte b2 = l2adj.GetElement(15);
-                    var l3adj = Sse2.Add(l3, Vector128.Create(b2));
+                byte b0 = l0.GetElement(15);
+                var l1adj = Sse2.Add(l1, Vector128.Create(b0));
+                byte b1 = l1adj.GetElement(15);
+                var l2adj = Sse2.Add(l2, Vector128.Create(b1));
+                byte b2 = l2adj.GetElement(15);
+                var l3adj = Sse2.Add(l3, Vector128.Create(b2));
 
-                    var res = Vector512.Create(
-                        Vector256.Create(l0, l1adj),
-                        Vector256.Create(l2adj, l3adj));
-                    Avx512BW.Store(p, res);
-                    running = Unsafe.ReadUnaligned<byte>(p + 63);
-                    i = 64;
-                }
+                var res = Vector512.Create(
+                    Vector256.Create(l0, l1adj),
+                    Vector256.Create(l2adj, l3adj));
+                res.StoreUnsafe(ref rowRef);
+                running = Unsafe.Add(ref rowRef, 63);
+                i = 64;
+            }
 
-                for (; i <= totalBytes - 64; i += 64)
-                {
-                    var v = Avx512BW.LoadVector512(p + i);
-                    var l0 = PrefixSum16(v.GetLower().GetLower());
-                    var l1 = PrefixSum16(v.GetLower().GetUpper());
-                    var l2 = PrefixSum16(v.GetUpper().GetLower());
-                    var l3 = PrefixSum16(v.GetUpper().GetUpper());
+            for (; i <= totalBytes - 64; i += 64)
+            {
+                ref byte chunkRef = ref Unsafe.Add(ref rowRef, i);
+                var v = Vector512.LoadUnsafe(ref chunkRef);
+                var l0 = PrefixSum16(v.GetLower().GetLower());
+                var l1 = PrefixSum16(v.GetLower().GetUpper());
+                var l2 = PrefixSum16(v.GetUpper().GetLower());
+                var l3 = PrefixSum16(v.GetUpper().GetUpper());
 
-                    byte b0 = l0.GetElement(15);
-                    var l1adj = Sse2.Add(l1, Vector128.Create(b0));
-                    byte b1 = l1adj.GetElement(15);
-                    var l2adj = Sse2.Add(l2, Vector128.Create(b1));
-                    byte b2 = l2adj.GetElement(15);
-                    var l3adj = Sse2.Add(l3, Vector128.Create(b2));
+                byte b0 = l0.GetElement(15);
+                var l1adj = Sse2.Add(l1, Vector128.Create(b0));
+                byte b1 = l1adj.GetElement(15);
+                var l2adj = Sse2.Add(l2, Vector128.Create(b1));
+                byte b2 = l2adj.GetElement(15);
+                var l3adj = Sse2.Add(l3, Vector128.Create(b2));
 
-                    var ps = Vector512.Create(
-                        Vector256.Create(l0, l1adj),
-                        Vector256.Create(l2adj, l3adj));
-                    var bro = Vector512.Create(running);
-                    var res = Avx512BW.Add(ps, bro);
-                    Avx512BW.Store(p + i, res);
-                    running = Unsafe.ReadUnaligned<byte>(p + i + 63);
-                }
+                var ps = Vector512.Create(
+                    Vector256.Create(l0, l1adj),
+                    Vector256.Create(l2adj, l3adj));
+                var bro = Vector512.Create(running);
+                var res = Avx512BW.Add(ps, bro);
+                res.StoreUnsafe(ref chunkRef);
+                running = Unsafe.Add(ref rowRef, i + 63);
             }
 
             for (; i < totalBytes; i++)
                 row[i] += row[i - 1];
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
         // ── ARM NEON encode / decode (16 bytes per iteration) ──────────────────
-        // ═══════════════════════════════════════════════════════════════════════
 
-        private static unsafe void DeltaEncodeNeon(Span<byte> row, int totalBytes)
+        private static void DeltaEncodeNeon(Span<byte> row, int totalBytes)
         {
             if (!AdvSimd.IsSupported) { DeltaEncodePureScalar(row, totalBytes); return; }
 
             int i = totalBytes;
-            fixed (byte* p = row)
+            ref byte rowRef = ref MemoryMarshal.GetReference(row);
+
+            for (; i > 16; i -= 16)
             {
-                for (; i > 16; i -= 16)
-                {
-                    var cur = AdvSimd.LoadVector128(p + i - 16);
-                    var prv = AdvSimd.LoadVector128(p + i - 17);
-                    var res = AdvSimd.Subtract(cur, prv);
-                    AdvSimd.Store(p + i - 16, res);
-                }
+                var cur = Vector128.LoadUnsafe(ref Unsafe.Add(ref rowRef, i - 16));
+                var prv = Vector128.LoadUnsafe(ref Unsafe.Add(ref rowRef, i - 17));
+                var res = AdvSimd.Subtract(cur, prv);
+                res.StoreUnsafe(ref Unsafe.Add(ref rowRef, i - 16));
             }
+
             for (; i >= 2; i--)
                 row[i - 1] -= row[i - 2];
         }
 
-        private static unsafe void DeltaDecodeNeon(Span<byte> row, int totalBytes)
+        private static void DeltaDecodeNeon(Span<byte> row, int totalBytes)
         {
             if (!AdvSimd.IsSupported) { DeltaDecodePureScalar(row, totalBytes); return; }
 
             int i = 0;
             byte running = 0;
+            ref byte rowRef = ref MemoryMarshal.GetReference(row);
 
-            fixed (byte* p = row)
+            if (totalBytes >= 16)
             {
-                if (totalBytes >= 16)
-                {
-                    var v0 = AdvSimd.LoadVector128(p);
-                    var ps = PrefixSum16Neon(v0.AsByte());
-                    AdvSimd.Store(p, ps);
-                    running = Unsafe.ReadUnaligned<byte>(p + 15);
-                    i = 16;
-                }
+                var v0 = Vector128.LoadUnsafe(ref rowRef);
+                var ps = PrefixSum16Neon(v0);
+                ps.StoreUnsafe(ref rowRef);
+                running = Unsafe.Add(ref rowRef, 15);
+                i = 16;
+            }
 
-                for (; i <= totalBytes - 16; i += 16)
-                {
-                    var v = AdvSimd.LoadVector128(p + i);
-                    var ps = PrefixSum16Neon(v.AsByte());
-                    var bro = Vector128.Create(running);
-                    var res = AdvSimd.Add(ps, bro);
-                    AdvSimd.Store(p + i, res);
-                    running = Unsafe.ReadUnaligned<byte>(p + i + 15);
-                }
+            for (; i <= totalBytes - 16; i += 16)
+            {
+                ref byte chunkRef = ref Unsafe.Add(ref rowRef, i);
+                var v = Vector128.LoadUnsafe(ref chunkRef);
+                var ps = PrefixSum16Neon(v);
+                var bro = Vector128.Create(running);
+                var res = AdvSimd.Add(ps, bro);
+                res.StoreUnsafe(ref chunkRef);
+                running = Unsafe.Add(ref rowRef, i + 15);
             }
 
             for (; i < totalBytes; i++)
                 row[i] += row[i - 1];
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
         // ── Prefix-sum kernels (16-byte exclusive → inclusive via shift+add) ───
-        // ═══════════════════════════════════════════════════════════════════════
 
         /// <summary>
         /// Computes the inclusive byte-wise prefix sum of a 16-byte vector.
@@ -461,18 +443,15 @@ namespace DZen.FloatingPointPredictor
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static Vector128<byte> PrefixSum16Neon(Vector128<byte> v)
         {
-            unsafe
+            Span<byte> buf = stackalloc byte[16];
+            v.StoreUnsafe(ref MemoryMarshal.GetReference(buf));
+            byte acc = 0;
+            for (int i = 0; i < 16; i++)
             {
-                byte* buf = stackalloc byte[16];
-                AdvSimd.Store(buf, v);
-                byte acc = 0;
-                for (int i = 0; i < 16; i++)
-                {
-                    acc += buf[i];
-                    buf[i] = acc;
-                }
-                return AdvSimd.LoadVector128(buf);
+                acc += buf[i];
+                buf[i] = acc;
             }
+            return Vector128.LoadUnsafe(ref MemoryMarshal.GetReference(buf));
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

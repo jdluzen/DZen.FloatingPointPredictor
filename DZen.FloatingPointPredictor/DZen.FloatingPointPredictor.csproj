@@ -4,7 +4,6 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- NuGet package metadata -->
     <PackageId>DZen.FloatingPointPredictor</PackageId>
@@ -18,7 +17,7 @@
     </Description>
     <PackageTags>tiff;cog;geotiff;predictor;simd;avx512;avx2;neon;raster</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-		<Copyright>Copyright (c) Joe Dluzen 2026</Copyright>
+    <Copyright>Copyright (c) Joe Dluzen 2026</Copyright>
     <PackageProjectUrl>https://github.com/jdluzen/DZen.FloatingPointPredictor</PackageProjectUrl>
     <RepositoryUrl>https://github.com/jdluzen/DZen.FloatingPointPredictor</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
