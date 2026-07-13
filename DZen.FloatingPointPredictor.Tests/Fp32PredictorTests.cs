@@ -606,5 +606,24 @@ namespace DZen.FloatingPointPredictor.Tests
 
             Assert.Equal(firstEncode, buf);
         }
+
+        [Fact]
+        public void Encode_UndersizedTile_ThrowsBeforeMutation()
+        {
+            byte[] buf = Enumerable.Range(1, 31).Select(i => (byte)i).ToArray();
+            var original = (byte[])buf.Clone();
+
+            Assert.Throws<ArgumentException>(() => Fp32Predictor.Encode(buf, width: 4, rows: 2));
+            Assert.Equal(original, buf);
+        }
+
+        [Theory]
+        [InlineData(-1, 1)]
+        [InlineData(1, -1)]
+        public void Encode_NegativeDimensions_Throw(int width, int rows)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                Fp32Predictor.Encode(Array.Empty<byte>(), width, rows));
+        }
     }
 }

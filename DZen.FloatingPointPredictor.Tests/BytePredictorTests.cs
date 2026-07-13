@@ -52,7 +52,7 @@ namespace DZen.FloatingPointPredictor.Tests
             return dec;
         }
 
-        public static byte[] ReferenceEncodeStrided(byte[] row, int width, int bps)
+        public static byte[] ReferenceEncodeLegacyBytewise(byte[] row, int width, int bps)
         {
             var enc = (byte[])row.Clone();
             for (int i = width - 1; i >= 1; i--)
@@ -65,17 +65,46 @@ namespace DZen.FloatingPointPredictor.Tests
             return enc;
         }
 
+        public static byte[] ReferenceEncodeStrided(byte[] row, int width, int bps)
+        {
+            var enc = (byte[])row.Clone();
+            ulong mask = bps == sizeof(ulong) ? ulong.MaxValue : (1UL << (bps * 8)) - 1;
+            for (int i = width - 1; i >= 1; i--)
+            {
+                int cur = i * bps;
+                int prev = cur - bps;
+                ulong difference = unchecked(ReadLittleEndian(enc, cur, bps) - ReadLittleEndian(enc, prev, bps)) & mask;
+                WriteLittleEndian(enc, cur, bps, difference);
+            }
+            return enc;
+        }
+
         public static byte[] ReferenceDecodeStrided(byte[] encoded, int width, int bps)
         {
             var dec = (byte[])encoded.Clone();
+            ulong mask = bps == sizeof(ulong) ? ulong.MaxValue : (1UL << (bps * 8)) - 1;
             for (int i = 1; i < width; i++)
             {
                 int cur = i * bps;
                 int prev = cur - bps;
-                for (int b = 0; b < bps; b++)
-                    dec[cur + b] += dec[prev + b];
+                ulong sum = unchecked(ReadLittleEndian(dec, cur, bps) + ReadLittleEndian(dec, prev, bps)) & mask;
+                WriteLittleEndian(dec, cur, bps, sum);
             }
             return dec;
+        }
+
+        private static ulong ReadLittleEndian(byte[] data, int offset, int count)
+        {
+            ulong value = 0;
+            for (int b = 0; b < count; b++)
+                value |= (ulong)data[offset + b] << (b * 8);
+            return value;
+        }
+
+        private static void WriteLittleEndian(byte[] data, int offset, int count, ulong value)
+        {
+            for (int b = 0; b < count; b++)
+                data[offset + b] = (byte)(value >> (b * 8));
         }
     }
 
@@ -522,6 +551,48 @@ namespace DZen.FloatingPointPredictor.Tests
         }
 
         [Fact]
+        public void Bps2_CarryAcrossBytes_MatchesTiffPredictor2()
+        {
+            // Little-endian samples 0x00FF and 0x0100 differ by 1 as complete
+            // 16-bit values. Byte-wise subtraction would incorrectly produce 0x0101.
+            byte[] actual = { 0xFF, 0x00, 0x00, 0x01 };
+
+            BytePredictor.Encode(actual, width: 2, rows: 1, bytesPerSample: 2);
+            Assert.Equal(new byte[] { 0xFF, 0x00, 0x01, 0x00 }, actual);
+
+            BytePredictor.Decode(actual, width: 2, rows: 1, bytesPerSample: 2);
+            Assert.Equal(new byte[] { 0xFF, 0x00, 0x00, 0x01 }, actual);
+        }
+
+        [Fact]
+        public void LegacyBps2_DecodeAndReencode_MigratesToTiffPredictor2()
+        {
+            byte[] legacyEncoded = { 0xFF, 0x00, 0x01, 0x01 };
+
+            BytePredictor.DecodeLegacyBytewise(legacyEncoded, width: 2, rows: 1, bytesPerSample: 2);
+            Assert.Equal(new byte[] { 0xFF, 0x00, 0x00, 0x01 }, legacyEncoded);
+
+            BytePredictor.Encode(legacyEncoded, width: 2, rows: 1, bytesPerSample: 2);
+            Assert.Equal(new byte[] { 0xFF, 0x00, 0x01, 0x00 }, legacyEncoded);
+        }
+
+        [Theory]
+        [InlineData(2)]
+        [InlineData(3)]
+        [InlineData(4)]
+        [InlineData(8)]
+        public void LegacyDecode_RecoversVersion1Payload(int bytesPerSample)
+        {
+            const int width = 17;
+            byte[] original = ByteTestHelpers.RandomBytes(width * bytesPerSample, seed: bytesPerSample * 101);
+            byte[] encoded = ByteTestHelpers.ReferenceEncodeLegacyBytewise(original, width, bytesPerSample);
+
+            BytePredictor.DecodeLegacyBytewise(encoded, width, rows: 1, bytesPerSample);
+
+            Assert.Equal(original, encoded);
+        }
+
+        [Fact]
         public void Bps2_DecodeMatchesReference()
         {
             int width = 8, bps = 2;
@@ -701,6 +772,26 @@ namespace DZen.FloatingPointPredictor.Tests
             BytePredictor.Encode(buf, width: 1, rows: 1); // encode does nothing for width=1
             BytePredictor.Decode(buf, width: 1, rows: 1);
             Assert.Equal(0xBB, buf[0]);
+        }
+
+        [Fact]
+        public void Encode_UndersizedTile_ThrowsBeforeMutation()
+        {
+            byte[] buf = { 1, 2, 3, 4, 5, 6, 7 };
+            var original = (byte[])buf.Clone();
+
+            Assert.Throws<ArgumentException>(() => BytePredictor.Encode(buf, width: 4, rows: 2));
+            Assert.Equal(original, buf);
+        }
+
+        [Theory]
+        [InlineData(-1, 1, 1)]
+        [InlineData(1, -1, 1)]
+        [InlineData(1, 1, 0)]
+        public void Encode_InvalidDimensions_Throw(int width, int rows, int bytesPerSample)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                BytePredictor.Encode(Array.Empty<byte>(), width, rows, bytesPerSample));
         }
     }
 }

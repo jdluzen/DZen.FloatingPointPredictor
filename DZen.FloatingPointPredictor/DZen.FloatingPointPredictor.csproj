@@ -7,7 +7,7 @@
 
     <!-- NuGet package metadata -->
     <PackageId>DZen.FloatingPointPredictor</PackageId>
-    <Version>1.1.0</Version>
+    <Version>2.0.0</Version>
     <Authors>Joe Dluzen</Authors>
     <Description>
       Hardware-accelerated implementations of TIFF Predictor = 2 (horizontal
@@ -22,7 +22,17 @@
     <PackageProjectUrl>https://github.com/jdluzen/DZen.FloatingPointPredictor</PackageProjectUrl>
     <RepositoryUrl>https://github.com/jdluzen/DZen.FloatingPointPredictor</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>
+      Version 2.0 corrects Predictor=2 arithmetic for multi-byte samples. Data written
+      by version 1.x with bytesPerSample greater than 1 must be read with
+      BytePredictor.DecodeLegacyBytewise and re-encoded before using the v2 decoder.
+    </PackageReleaseNotes>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
 </Project>

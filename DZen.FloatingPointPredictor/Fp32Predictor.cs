@@ -62,7 +62,7 @@ namespace DZen.FloatingPointPredictor
         /// <param name="rows">Number of rows in the tile.</param>
         public static void Encode(Span<byte> tile, int width, int rows)
         {
-            int rowBytes = width * 4;
+            int rowBytes = ValidateArguments(tile.Length, width, rows);
             for (int r = 0; r < rows; r++)
                 EncodeRow(tile.Slice(r * rowBytes, rowBytes), width);
         }
@@ -74,9 +74,30 @@ namespace DZen.FloatingPointPredictor
         /// </summary>
         public static void Decode(Span<byte> tile, int width, int rows)
         {
-            int rowBytes = width * 4;
+            int rowBytes = ValidateArguments(tile.Length, width, rows);
             for (int r = 0; r < rows; r++)
                 DecodeRow(tile.Slice(r * rowBytes, rowBytes), width);
+        }
+
+        private static int ValidateArguments(int tileLength, int width, int rows)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(width);
+            ArgumentOutOfRangeException.ThrowIfNegative(rows);
+
+            if (width == 0 || rows == 0)
+                return 0;
+
+            long rowBytes = (long)width * 4;
+            if (rowBytes > int.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(width), "A row exceeds the maximum supported span length.");
+
+            long requiredBytes = rowBytes * rows;
+            if (requiredBytes > int.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(rows), "The tile dimensions exceed the maximum supported span length.");
+            if (tileLength < requiredBytes)
+                throw new ArgumentException("The tile is shorter than the supplied dimensions require.", "tile");
+
+            return (int)rowBytes;
         }
 
         // ── Per-row encode ─────────────────────────────────────────────────────
@@ -209,10 +230,6 @@ namespace DZen.FloatingPointPredictor
 
             for (; i <= width - 4; i += 4)
             {
-                ReadOnlySpan<byte> data = [1, 2, 3, 4];
-                ref readonly byte data0 = ref MemoryMarshal.GetReference(data);
-                Vector128<byte> vector2 = Vector128.LoadUnsafe(in data0);
-
                 var src = Vector128.LoadUnsafe(ref Unsafe.Add(ref srcRef, i * 4));
                 uint p0 = Ssse3.Shuffle(src, shuf0).AsUInt32().GetElement(0);
                 uint p1 = Ssse3.Shuffle(src, shuf1).AsUInt32().GetElement(0);

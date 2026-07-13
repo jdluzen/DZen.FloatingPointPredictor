@@ -15,7 +15,8 @@ namespace DZen.FloatingPointPredictor
     /// ──────────────────
     /// Each sample in a row is replaced by the difference between that sample and
     /// the preceding one.  For multi-byte samples, the subtraction is performed
-    /// byte-wise (TIFF modulo-256 wrapping per byte position):
+    /// as a complete little-endian unsigned value, with arithmetic wrapping at
+    /// the sample width:
     ///
     ///   s[i] ← s[i] − s[i−1]   (encode, right-to-left)
     ///   s[i] ← s[i] + s[i−1]   (decode, left-to-right)
@@ -55,7 +56,7 @@ namespace DZen.FloatingPointPredictor
         /// <param name="bytesPerSample">Number of bytes per sample (default 1).</param>
         public static void Encode(Span<byte> tile, int width, int rows, int bytesPerSample = 1)
         {
-            int rowBytes = width * bytesPerSample;
+            int rowBytes = ValidateArguments(tile.Length, width, rows, bytesPerSample);
             for (int r = 0; r < rows; r++)
                 EncodeRow(tile.Slice(r * rowBytes, rowBytes), width, bytesPerSample);
         }
@@ -67,9 +68,47 @@ namespace DZen.FloatingPointPredictor
         /// </summary>
         public static void Decode(Span<byte> tile, int width, int rows, int bytesPerSample = 1)
         {
-            int rowBytes = width * bytesPerSample;
+            int rowBytes = ValidateArguments(tile.Length, width, rows, bytesPerSample);
             for (int r = 0; r < rows; r++)
                 DecodeRow(tile.Slice(r * rowBytes, rowBytes), width, bytesPerSample);
+        }
+
+        /// <summary>
+        /// Decodes multi-byte data produced by DZen.FloatingPointPredictor 1.x,
+        /// which applied Predictor=2 arithmetic independently to each byte.
+        /// </summary>
+        /// <remarks>
+        /// Use this method only for legacy payloads written by version 1.x with
+        /// <paramref name="bytesPerSample"/> greater than 1. New and migrated data
+        /// must use <see cref="Decode(Span{byte}, int, int, int)"/>.
+        /// </remarks>
+        public static void DecodeLegacyBytewise(Span<byte> tile, int width, int rows, int bytesPerSample = 1)
+        {
+            int rowBytes = ValidateArguments(tile.Length, width, rows, bytesPerSample);
+            for (int r = 0; r < rows; r++)
+                DecodeLegacyBytewiseRow(tile.Slice(r * rowBytes, rowBytes), width, bytesPerSample);
+        }
+
+        private static int ValidateArguments(int tileLength, int width, int rows, int bytesPerSample)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(width);
+            ArgumentOutOfRangeException.ThrowIfNegative(rows);
+            ArgumentOutOfRangeException.ThrowIfLessThan(bytesPerSample, 1);
+
+            if (width == 0 || rows == 0)
+                return 0;
+
+            long rowBytes = (long)width * bytesPerSample;
+            if (rowBytes > int.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(width), "A row exceeds the maximum supported span length.");
+
+            long requiredBytes = rowBytes * rows;
+            if (requiredBytes > int.MaxValue)
+                throw new ArgumentOutOfRangeException(nameof(rows), "The tile dimensions exceed the maximum supported span length.");
+            if (tileLength < requiredBytes)
+                throw new ArgumentException("The tile is shorter than the supplied dimensions require.", "tile");
+
+            return (int)rowBytes;
         }
 
         // ── Per-row entry points ───────────────────────────────────────────────
@@ -96,6 +135,17 @@ namespace DZen.FloatingPointPredictor
                 DeltaDecodeStrided(row, width, bps);
         }
 
+        private static void DecodeLegacyBytewiseRow(Span<byte> row, int width, int bps)
+        {
+            int totalBytes = width * bps;
+            if (totalBytes <= bps) return;
+
+            if (bps == 1)
+                DeltaDecodeScalar(row, totalBytes);
+            else
+                DeltaDecodeLegacyBytewise(row, width, bps);
+        }
+
         // ── Scalar implementations ─────────────────────────────────────────────
 
         private static void DeltaEncodeStrided(Span<byte> row, int width, int bps)
@@ -104,12 +154,33 @@ namespace DZen.FloatingPointPredictor
             {
                 int cur = i * bps;
                 int prev = cur - bps;
+                int borrow = 0;
                 for (int b = 0; b < bps; b++)
-                    row[cur + b] -= row[prev + b];
+                {
+                    int difference = row[cur + b] - row[prev + b] - borrow;
+                    row[cur + b] = unchecked((byte)difference);
+                    borrow = difference < 0 ? 1 : 0;
+                }
             }
         }
 
         private static void DeltaDecodeStrided(Span<byte> row, int width, int bps)
+        {
+            for (int i = 1; i < width; i++)
+            {
+                int cur = i * bps;
+                int prev = cur - bps;
+                int carry = 0;
+                for (int b = 0; b < bps; b++)
+                {
+                    int sum = row[cur + b] + row[prev + b] + carry;
+                    row[cur + b] = unchecked((byte)sum);
+                    carry = sum >> 8;
+                }
+            }
+        }
+
+        private static void DeltaDecodeLegacyBytewise(Span<byte> row, int width, int bps)
         {
             for (int i = 1; i < width; i++)
             {

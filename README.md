@@ -29,7 +29,7 @@ Decoding applies the exact inverse: cumulative sum to undo the delta, then unshu
 
 ### Predictor = 2 — Horizontal Differencing
 
-A general-purpose byte-level differencing predictor. Each sample in a row is replaced by its difference from the preceding sample, with modular byte arithmetic:
+A general-purpose horizontal differencing predictor. Each sample in a row is replaced by its difference from the preceding sample, with modular arithmetic at the complete sample width:
 
 ```
 s[0]   = unchanged
@@ -76,13 +76,13 @@ For `bytesPerSample > 1` only the scalar path is used.
 ## Installation
 
 ```
-dotnet add package DZen.FloatingPointPredictor
+dotnet add package DZen.FloatingPointPredictor --version 2.0.0
 ```
 
 Or via the NuGet Package Manager:
 
 ```
-Install-Package DZen.FloatingPointPredictor
+Install-Package DZen.FloatingPointPredictor -Version 2.0.0
 ```
 
 Requires **.NET 10.0** or later. The package targets `net10.0`. No unsafe code — all SIMD access uses `Vector.LoadUnsafe`/`Vector.StoreUnsafe` with span-based refs.
@@ -127,6 +127,12 @@ public static class BytePredictor
     /// </summary>
     public static void Decode(Span<byte> tile, int width, int rows,
                               int bytesPerSample = 1);
+
+    /// <summary>
+    /// Decodes legacy multi-byte payloads written by package version 1.x.
+    /// </summary>
+    public static void DecodeLegacyBytewise(Span<byte> tile, int width, int rows,
+                                            int bytesPerSample = 1);
 }
 ```
 
@@ -190,6 +196,42 @@ BytePredictor.Decode(tile, width, rows, bytesPerSample: 2);
 
 ---
 
+## Migrating Predictor 2 data from 1.x
+
+Version 2.0 fixes a wire-format compatibility bug in `BytePredictor` when `bytesPerSample > 1`. Versions 1.x subtracted each byte independently; version 2.0 performs modular arithmetic on each complete little-endian sample, matching TIFF Predictor 2.
+
+This affects only data encoded by `BytePredictor` with `bytesPerSample > 1`. `Fp32Predictor` and one-byte `BytePredictor` data are unchanged.
+
+Legacy and corrected payloads are not reliably distinguishable from their bytes alone. Use application metadata, a schema version, or knowledge of the writer version to select the decoder:
+
+```csharp
+byte[] tile = Zstd.Decompress(compressedTile);
+
+if (writtenByFloatingPointPredictorV1)
+    BytePredictor.DecodeLegacyBytewise(tile, width, rows, bytesPerSample);
+else
+    BytePredictor.Decode(tile, width, rows, bytesPerSample);
+```
+
+For a permanent migration, decode the 1.x payload to raw samples, encode it with version 2.0, then replace the stored payload and record the new format version:
+
+```csharp
+byte[] tile = Zstd.Decompress(legacyCompressedTile);
+
+// Recover the original raw samples using the 1.x byte-wise inverse.
+BytePredictor.DecodeLegacyBytewise(tile, width, rows, bytesPerSample);
+
+// Re-encode using the TIFF-compatible version 2 algorithm.
+BytePredictor.Encode(tile, width, rows, bytesPerSample);
+byte[] migratedCompressedTile = Zstd.Compress(tile);
+
+WriteMigratedTile(migratedCompressedTile, predictorImplementationVersion: 2);
+```
+
+Do not use `DecodeLegacyBytewise` for newly encoded data. After migration, use the normal `BytePredictor.Decode` method.
+
+---
+
 ## Algorithm detail
 
 ### Predictor = 3 (Fp32Predictor)
@@ -229,7 +271,7 @@ encode:  s[i] = s[i] − s[i−1]      (i from width−1 down to 1, right-to-lef
 decode:  s[i] = s[i] + s[i−1]      (i from 1 to width−1, left-to-right)
 ```
 
-Each sample is `B` bytes; subtraction is done byte-by-byte with modular arithmetic. The first sample of every row carries the raw value and is never differenced. For `bytesPerSample == 1`, right-to-left overlapping SIMD loads and left-to-right parallel prefix-sum kernels (shift-left + add, log₂(N) steps) accelerate the inner loop.
+Each sample is a little-endian unsigned value of `B` bytes; arithmetic wraps at the complete sample width. The first sample of every row carries the raw value and is never differenced. For `bytesPerSample == 1`, right-to-left overlapping SIMD loads and left-to-right parallel prefix-sum kernels (shift-left + add, log₂(N) steps) accelerate the inner loop.
 
 ---
 
@@ -260,6 +302,20 @@ dotnet test DZen.FloatingPointPredictor.Tests
 # or with verbose output
 dotnet test DZen.FloatingPointPredictor.Tests --logger "console;verbosity=detailed"
 ```
+
+To exercise every SIMD dispatch tier available on the current machine, plus the
+scalar fallback, run:
+
+```bash
+./scripts/test-simd.sh
+```
+
+On x64, the script runs native dispatch, forced AVX2, forced SSSE3/SSE2,
+SSE2-with-scalar-Fp32, and fully scalar profiles when those instruction sets are
+available. On ARM64, native dispatch covers AdvSimd/NEON and a second run covers
+the scalar fallback. A script cannot enable instructions the host CPU and OS do
+not expose, so complete cross-architecture coverage still requires both x64 and
+ARM64 runners.
 
 Code coverage is collected via **Coverlet** (included as a test dependency) if your CI runner supports it:
 
@@ -297,7 +353,7 @@ dotnet test DZen.FloatingPointPredictor.Tests --collect:"XPlat Code Coverage"
 
 **11. `ByteScalarCorrectnessTests`** — Small widths (1–16) forcing scalar fallback paths.
 
-**12. `ByteStrideTests`** — Multi-byte samples: `bytesPerSample` ∈ {2, 3, 4, 8} with matching reference.
+**12. `ByteStrideTests`** — Multi-byte samples: `bytesPerSample` ∈ {2, 3, 4, 8}, independent reference checks, and legacy 1.x migration coverage.
 
 **13. `ByteApiContractTests`** — In-place semantics, empty input, idempotence, width-1 no-op.
 
